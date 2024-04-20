@@ -86,30 +86,6 @@ let rec consult_help expr db =
       | Fact (Args (e, p)) -> e, p
       | _ -> raise InvalidQuery
     in
-    let rec rule_uni mgus atoms =
-      let get_new_mgu atom mgu =
-        List.map
-          (fun x ->
-            match x with
-            | True -> mgu
-            | False -> False
-            | Conditional l ->
-              (match mgu with
-               | True -> Conditional l
-               | False -> False
-               | Conditional l' -> Conditional (l' @ l)))
-          (consult_help (subst mgu atom) db)
-      in
-      match atoms with
-      | atom :: rem_atoms ->
-        (* first we need to find all possible new mgus for this particular atom*)
-        let new_mgus =
-          List.fold_left (fun acc cur -> acc @ get_new_mgu atom cur) [] mgus
-        in
-        let new_mgus = new_mgus in
-        rule_uni new_mgus rem_atoms
-      | [] -> mgus
-    in
     let expr', rem = find_match e db in
     match expr' with
     (* | Fact(Args(e, p')) -> [find_mgu p p'] *)
@@ -136,12 +112,34 @@ let rec consult_help expr db =
             | Conditional l, True -> Conditional l
             | Conditional l, False -> False
             | Conditional l, Conditional l' -> Conditional (l @ l'))
-          (rule_uni [ initial_mgu ] factual_body)
+          (rule_uni [ initial_mgu ] factual_body db)
       in
       new_mgus
     | _ -> [ True ]
   with
   | NoMatchingRule -> [ False ]
+
+and rule_uni mgus atoms db =
+  let get_new_mgu atom mgu =
+    List.map
+      (fun x ->
+        match x with
+        | True -> mgu
+        | False -> False
+        | Conditional l ->
+          (match mgu with
+           | True -> Conditional l
+           | False -> False
+           | Conditional l' -> Conditional (l' @ l)))
+      (consult_help (subst mgu atom) db)
+  in
+  match atoms with
+  | atom :: rem_atoms ->
+    (* first we need to find all possible new mgus for this particular atom*)
+    let new_mgus = List.fold_left (fun acc cur -> acc @ get_new_mgu atom cur) [] mgus in
+    let new_mgus = new_mgus in
+    rule_uni new_mgus rem_atoms db
+  | [] -> mgus
 ;;
 
 exception NotAVariable
@@ -199,30 +197,35 @@ let rec cleanup ans =
 ;;
 
 let consult expr db =
-  let parsed_expr =
-    match Lexer.p expr with
-    | Ast.Ex [ d ] -> d
-    | _ -> raise MoreThanOneQuery
+  let (Ex parsed_expr) = Lexer.p expr in
+  let single_formatter parsed_expr =
+    let parsed_expr =
+      match parsed_expr with
+      | Fact (Args (e, p)) ->
+        Fact
+          (Args
+             ( e
+             , List.map
+                 (fun x ->
+                   match x with
+                   | Variable a -> Variable (a ^ "@")
+                   | Constant a -> Constant a
+                   | _ -> raise MGUOnlyHandlesVarsAndConsts)
+                 p ))
+      | _ -> raise MGUOnlyWorksWithArgs
+    in
+    parsed_expr
   in
-  let parsed_expr =
-    match parsed_expr with
-    | Fact (Args (e, p)) ->
-      Fact
-        (Args
-           ( e
-           , List.map
-               (fun x ->
-                 match x with
-                 | Variable a -> Variable (a ^ "@")
-                 | Constant a -> Constant a
-                 | _ -> raise MGUOnlyHandlesVarsAndConsts)
-               p ))
-    | _ -> raise MGUOnlyWorksWithArgs
+  let parsed_expr = List.map single_formatter parsed_expr in
+  let answer_formatter ans =
+    if List.mem True ans
+    then [ True ]
+    else if cleanup ans = []
+    then [ False ]
+    else cleanup ans
   in
-  let ans = List.filter (fun x -> x <> False) (consult_help parsed_expr db) in
-  if List.mem True ans
-  then [ True ]
-  else if cleanup ans = []
-  then [ False ]
-  else cleanup ans
+  answer_formatter @@ List.filter (fun x -> False <> x) (rule_uni [ True ] parsed_expr db)
 ;;
+
+(* in
+   let ans = List.filter (fun x -> x <> False) (consult_help parsed_expr db) in *)
