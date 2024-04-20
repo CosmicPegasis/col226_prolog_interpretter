@@ -53,7 +53,7 @@ let rec find_mgu l1 l2 =
   let mgu_helper e1 e2 =
     match e1, e2 with
     | Variable a1, Variable a2 ->
-      if a1 = a2 then True else Conditional [ a1, Variable a2 ]
+      if a1 = a2 then True else Conditional [ a2, Variable a1 ]
     | Variable a1, Constant a2 -> Conditional [ a1, Constant a2 ]
     | Constant a1, Variable a2 -> Conditional [ a2, Constant a1 ]
     | Constant a1, Constant a2 -> if a1 = a2 then True else False
@@ -97,7 +97,7 @@ let rec consult_help expr db =
               (match mgu with
                | True -> Conditional l
                | False -> False
-               | Conditional l' -> Conditional (l @ l')))
+               | Conditional l' -> Conditional (l' @ l)))
           (consult_help (subst mgu atom) db)
       in
       match atoms with
@@ -144,27 +144,58 @@ let rec consult_help expr db =
   | NoMatchingRule -> [ False ]
 ;;
 
+exception NotAVariable
+
+let is_internal_var name = not (String.ends_with ~suffix:"@" name)
+
+let rec subst_internal_variables l l' =
+  let subst subst_var_name structure arr =
+    List.filter
+      (fun (var_name, str) -> var_name <> subst_var_name)
+      (List.map
+         (fun (var_name, structure') ->
+           match structure' with
+           | Variable name ->
+             if name = subst_var_name then var_name, structure else var_name, structure'
+           | _ -> var_name, structure')
+         arr)
+  in
+  match l with
+  | (var_name, structure) :: tl ->
+    if is_internal_var var_name
+    then (
+      let l' = subst var_name structure l' in
+      subst_internal_variables tl l')
+    else subst_internal_variables tl l'
+  | [] -> l'
+;;
+
 let rec cleanup ans =
-  let rec trim l =
+  let rec trim_internal_variables l =
     match l with
     | Conditional l' :: tl ->
+      let l' = subst_internal_variables l' l' in
       Conditional
-        (List.filter
-           (fun (var_name, structure) -> String.ends_with ~suffix:"@" var_name)
-           l')
-      :: trim tl
-    | True :: tl -> True :: trim tl
-    | False :: tl -> False :: trim tl
+        (List.filter (fun (var_name, structure) -> not (is_internal_var var_name)) l')
+      :: trim_internal_variables tl
+    | True :: tl -> True :: trim_internal_variables tl
+    | False :: tl -> False :: trim_internal_variables tl
     | [] -> []
+  in
+  let trim_at_signs l =
+    List.map
+      (fun (var_name, structure) ->
+        String.sub var_name 0 (String.length var_name - 1), structure)
+      l
   in
   List.map
     (fun x ->
       match x with
       | Conditional [] -> True
-      | Conditional l -> Conditional l
+      | Conditional l -> Conditional (trim_at_signs l)
       | True -> True
       | False -> False)
-    (trim ans)
+    (trim_internal_variables ans)
 ;;
 
 let consult expr db =
@@ -173,7 +204,22 @@ let consult expr db =
     | Ast.Ex [ d ] -> d
     | _ -> raise MoreThanOneQuery
   in
-  let ans = List.filter (fun x -> x != False) (consult_help parsed_expr db) in
+  let parsed_expr =
+    match parsed_expr with
+    | Fact (Args (e, p)) ->
+      Fact
+        (Args
+           ( e
+           , List.map
+               (fun x ->
+                 match x with
+                 | Variable a -> Variable (a ^ "@")
+                 | Constant a -> Constant a
+                 | _ -> raise MGUOnlyHandlesVarsAndConsts)
+               p ))
+    | _ -> raise MGUOnlyWorksWithArgs
+  in
+  let ans = List.filter (fun x -> x <> False) (consult_help parsed_expr db) in
   if List.mem True ans
   then [ True ]
   else if cleanup ans = []
