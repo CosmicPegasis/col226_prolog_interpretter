@@ -1,0 +1,8 @@
+*.cmo
+*.mli
+*.cmi
+lexer.ml
+parser.ml
+*.mly
+*.mll
+*.pl
