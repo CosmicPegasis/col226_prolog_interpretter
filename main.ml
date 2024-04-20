@@ -24,15 +24,17 @@ type ans =
 exception CanSubstOnlyFacts
 
 let rec subst_helper l p =
-  let rec iter key l =
-    match l with
-    | (k, v) :: tl -> if k = key then v else iter key tl
-    | [] -> Variable key
-  in
-  match p with
-  | Variable a :: tl -> iter a l :: subst_helper l tl
-  | b :: tl -> b :: subst_helper l tl
-  | [] -> []
+  match l with
+  | [] -> p
+  | (var_name, structure) :: tl ->
+    subst_helper
+      tl
+      (List.map
+         (fun x ->
+           match x with
+           | Variable v -> if v = var_name then structure else Variable v
+           | a -> a)
+         p)
 ;;
 
 let rec subst tables expr =
@@ -68,7 +70,7 @@ let rec find_mgu l1 l2 =
           match find_mgu (subst_helper l tl1) (subst_helper l tl2) with
           | True -> Conditional l
           | False -> False
-          | Conditional l' -> Conditional (l' @ l)
+          | Conditional l' -> Conditional (l @ l')
         in
         x
       | True -> find_mgu tl1 tl2
@@ -77,6 +79,35 @@ let rec find_mgu l1 l2 =
     x
   | [], [] -> True
   | _ -> False
+;;
+
+let rec print_conditional l =
+  match l with
+  | (var_name, structure) :: tl ->
+    let () =
+      match structure with
+      | Variable v -> Printf.printf "(Var %s, Var %s), " var_name v
+      | Constant v -> Printf.printf "(Var %s Constant %s), " var_name v
+      | _ -> ()
+    in
+    print_conditional tl
+  | [] -> print_string " "
+;;
+
+let rec print_mgu mgu =
+  match mgu with
+  | True :: tl ->
+    let () = print_string "true\n" in
+    print_mgu tl
+  | False :: tl ->
+    let () = print_string "false\n" in
+    print_mgu tl
+  | Conditional l :: tl ->
+    let () = print_string "Conditional [" in
+    let () = print_conditional l in
+    let () = print_string "]\n" in
+    print_mgu tl
+  | [] -> print_endline ""
 ;;
 
 let rec consult_help expr db =
@@ -111,15 +142,18 @@ let rec consult_help expr db =
             | False, _ -> False
             | Conditional l, True -> Conditional l
             | Conditional l, False -> False
-            | Conditional l, Conditional l' -> Conditional (l @ l'))
+            | Conditional l, Conditional l' -> Conditional (l' @ l))
           (rule_uni [ initial_mgu ] factual_body db)
       in
+      (* let () = print_endline " " in
+         let () = print_mgu (List.filter (fun x -> x <> False) new_mgus) in *)
       new_mgus
     | _ -> [ True ]
   with
   | NoMatchingRule -> [ False ]
 
 and rule_uni mgus atoms db =
+  (* let () = print_endline "called rule_uni" in *)
   let get_new_mgu atom mgu =
     List.map
       (fun x ->
@@ -137,7 +171,7 @@ and rule_uni mgus atoms db =
   | atom :: rem_atoms ->
     (* first we need to find all possible new mgus for this particular atom*)
     let new_mgus = List.fold_left (fun acc cur -> acc @ get_new_mgu atom cur) [] mgus in
-    let new_mgus = new_mgus in
+    (* let () = print_mgu (List.filter (fun x -> x <> False) new_mgus) in *)
     rule_uni new_mgus rem_atoms db
   | [] -> mgus
 ;;
@@ -229,3 +263,109 @@ let consult expr db =
 
 (* in
    let ans = List.filter (fun x -> x <> False) (consult_help parsed_expr db) in *)
+
+(*Test Cases*)
+
+(* parent(john, mary).
+   parent(john, peter).
+   parent(jane, mary).
+   parent(jane, peter).
+
+   parent(mary, alice).
+   parent(mary, bob).
+   parent(peter, charlie).
+   parent(peter, david).
+
+   parent(alice, eve).
+   parent(alice, frank).
+   parent(bob, grace).
+   parent(bob, henry).
+
+   parent(charlie, ian).
+   parent(charlie, jane).
+   parent(david, kate).
+   parent(david, lucy).
+
+   child(X, Y) :- parent(Y, X).
+*)
+(* 1.
+   consult "child(peter, john)." db
+   - : ans list = [True] *)
+(* 2.
+   consult "child(X, Y)." db;;
+   - : ans list =
+     [Conditional [("Y", Constant "john"); ("X", Constant "mary")];
+ Conditional [("Y", Constant "john"); ("X", Constant "peter")];
+ Conditional [("Y", Constant "jane"); ("X", Constant "mary")];
+ Conditional [("Y", Constant "jane"); ("X", Constant "peter")];
+ Conditional [("Y", Constant "mary"); ("X", Constant "alice")];
+ Conditional [("Y", Constant "mary"); ("X", Constant "bob")];
+ Conditional [("Y", Constant "peter"); ("X", Constant "charlie")];
+ Conditional [("Y", Constant "peter"); ("X", Constant "david")];
+ Conditional [("Y", Constant "alice"); ("X", Constant "eve")];
+ Conditional [("Y", Constant "alice"); ("X", Constant "frank")];
+ Conditional [("Y", Constant "bob"); ("X", Constant "grace")];
+ Conditional [("Y", Constant "bob"); ("X", Constant "henry")];
+ Conditional [("Y", Constant "charlie"); ("X", Constant "ian")];
+ Conditional [("Y", Constant "charlie"); ("X", Constant "jane")];
+ Conditional [("Y", Constant "david"); ("X", Constant "kate")];
+ Conditional [("Y", Constant "david"); ("X", Constant "lucy")]]*)
+
+(* 3.
+   consult "child(X, X)." db
+   - : ans list = [False]*)
+
+(*
+   "mem(aviral, bhu).
+   mem(singh,bhu).
+   together(X, Y) :-
+   mem(X, bhu),
+   mem(Y, bhu)."
+*)
+(*
+   4. together(aviral, bhu).
+   false
+   5. together(aviral, singh).
+   true
+   6. together(X, Y).
+   [Conditional [("X", Constant "aviral"); ("Y", Constant "aviral")];
+    Conditional [("X", Constant "aviral"); ("Y", Constant "singh")];
+    Conditional [("X", Constant "singh"); ("Y", Constant "aviral")];
+    Conditional [("X", Constant "singh"); ("Y", Constant "singh")]]
+   7. mem(aviral, bhu).
+   true
+   8. mem(singh, bhu).
+   true
+   9. mem(X, bhu).
+   [Conditional [("X", Constant "aviral")]; Conditional [("X", Constant "singh")]
+*)
+
+(*
+   person(john).
+   person(mary).
+   person(bob).
+   person(alice).
+
+   course(cs101).
+   course(math201).
+   course(eng105).
+
+   enrolled(john, cs101).
+   enrolled(john, math201).
+   enrolled(mary, cs101).
+   enrolled(bob, eng105).
+   enrolled(alice, math201).
+
+   instructor(mary, cs101).
+   instructor(bob, math201).
+
+   takes(X, Y) :- enrolled(X, Y).
+   teaches(X, Y) :- instructor(X, Y).
+
+   10. takes(john, X).
+   [Conditional [("X", Constant "cs101")];
+    Conditional [("X", Constant "math201")]]
+   11. teaches(X, Y).
+   [Conditional [("X", Constant "mary"); ("Y", Constant "cs101")];
+    Conditional [("X", Constant "bob"); ("Y", Constant "math201")]]
+*)
