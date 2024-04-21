@@ -5,7 +5,13 @@ let construct_db db =
 
 open Ast
 
+type ans =
+  | True
+  | False
+  | Conditional of (string * atom) list
+
 exception NoMatchingRule
+exception UnhandledMGUCase
 
 let rec find_match e db =
   match db with
@@ -14,71 +20,6 @@ let rec find_match e db =
   | Rule (Args (e', p), b) :: tl ->
     if e = e' then Rule (Args (e', p), b), tl else find_match e tl
   | _ -> raise NoMatchingRule
-;;
-
-type ans =
-  | True
-  | False
-  | Conditional of (string * atom) list
-
-exception CanSubstOnlyFacts
-
-let rec subst_helper l p =
-  match l with
-  | [] -> p
-  | (var_name, structure) :: tl ->
-    subst_helper
-      tl
-      (List.map
-         (fun x ->
-           match x with
-           | Variable v -> if v = var_name then structure else Variable v
-           | a -> a)
-         p)
-;;
-
-let rec subst tables expr =
-  match tables, expr with
-  | True, expr -> expr
-  | False, expr -> expr
-  | Conditional l, Fact (Args (e, p)) -> Fact (Args (e, subst_helper l p))
-  | _, _ -> raise CanSubstOnlyFacts
-;;
-
-exception MoreThanOneQuery
-exception InvalidQuery
-exception NotUnifiable
-exception MGUOnlyWorksWithArgs
-exception MGUOnlyHandlesVarsAndConsts
-
-let rec find_mgu l1 l2 =
-  let mgu_helper e1 e2 =
-    match e1, e2 with
-    | Variable a1, Variable a2 ->
-      if a1 = a2 then True else Conditional [ a2, Variable a1 ]
-    | Variable a1, Constant a2 -> Conditional [ a1, Constant a2 ]
-    | Constant a1, Variable a2 -> Conditional [ a2, Constant a1 ]
-    | Constant a1, Constant a2 -> if a1 = a2 then True else False
-    | _, _ -> raise MGUOnlyHandlesVarsAndConsts
-  in
-  match l1, l2 with
-  | hd1 :: tl1, hd2 :: tl2 ->
-    let x =
-      match mgu_helper hd1 hd2 with
-      | Conditional l ->
-        let x =
-          match find_mgu (subst_helper l tl1) (subst_helper l tl2) with
-          | True -> Conditional l
-          | False -> False
-          | Conditional l' -> Conditional (l @ l')
-        in
-        x
-      | True -> find_mgu tl1 tl2
-      | False -> False
-    in
-    x
-  | [], [] -> True
-  | _ -> False
 ;;
 
 let rec print_conditional l =
@@ -108,6 +49,100 @@ let rec print_mgu mgu =
     let () = print_string "]\n" in
     print_mgu tl
   | [] -> print_endline ""
+;;
+
+let rec atom_printer arg =
+  match arg with
+  | Args (e, p) ->
+    let () = print_endline "Args(" in
+    let () = print_endline (e ^ " ") in
+    let () = List.fold_left (fun acc elem -> atom_printer elem) () p in
+    print_endline ") "
+  | Variable v -> print_endline ("Variable: " ^ v ^ " ")
+  | Constant c -> print_endline ("Constant" ^ c ^ " ")
+  | Atom a -> atom_printer a
+;;
+
+exception CanSubstOnlyFacts
+
+let rec subst_helper l p =
+  match l with
+  | [] -> p
+  | (var_name, structure) :: tl ->
+    subst_helper
+      tl
+      (let p =
+         List.map
+           (fun x ->
+             match x with
+             | Variable v -> if v = var_name then structure else Variable v
+             | Args (e, p') ->
+               let () = print_endline "in_args" in
+               Args (e, subst_helper l p')
+             | Constant a -> Constant a
+             | _ -> raise UnhandledMGUCase)
+           p
+       in
+       p)
+;;
+
+let rec subst tables expr =
+  match tables, expr with
+  | True, expr -> expr
+  | False, expr -> expr
+  | Conditional l, Fact (Args (e, p)) -> Fact (Args (e, subst_helper l p))
+  | _, _ -> raise CanSubstOnlyFacts
+;;
+
+(* type atom =
+   | Args of string * atom list
+   | Variable of string
+   | Constant of string
+   | Atom of atom
+   | Int of int
+   | Array of atom list
+   | Cut *)
+
+exception MoreThanOneQuery
+exception InvalidQuery
+exception NotUnifiable
+exception MGUOnlyWorksWithArgs
+
+let rec find_mgu l1 l2 =
+  let mgu_helper e1 e2 =
+    match e1, e2 with
+    | Variable a1, Variable a2 ->
+      if a1 = a2 then True else Conditional [ a2, Variable a1 ]
+    | Variable a1, Constant a2 -> Conditional [ a1, Constant a2 ]
+    | Constant a1, Variable a2 -> Conditional [ a2, Constant a1 ]
+    | Constant a1, Constant a2 -> if a1 = a2 then True else False
+    | Variable a1, Args (e1, p1) -> Conditional [ a1, Args (e1, p1) ]
+    | Args (e1, p1), Variable a1 -> Conditional [ a1, Args (e1, p1) ]
+    | Args (e1, p1), Args (e2, p2) -> if e1 = e2 then find_mgu p1 p2 else False
+    (* | Variable a1, Array l -> Conditional [ a1, Array l ]
+       | Array l, Variable a1 -> Conditional [ a1, Array l ]
+       | Array l, Array l' -> find_mgu l l' *)
+    | _, _ -> raise UnhandledMGUCase
+  in
+  match l1, l2 with
+  | hd1 :: tl1, hd2 :: tl2 ->
+    let x =
+      match mgu_helper hd1 hd2 with
+      | Conditional l ->
+        let x =
+          match find_mgu (subst_helper l tl1) (subst_helper l tl2) with
+          | True -> Conditional l
+          | False -> False
+          | Conditional l' -> Conditional (l @ l')
+        in
+        x
+      | True -> find_mgu tl1 tl2
+      | False -> False
+    in
+    (* let () = print_mgu [ x ] in *)
+    x
+  | [], [] -> True
+  | _ -> False
 ;;
 
 let rec consult_help expr db =
@@ -153,7 +188,6 @@ let rec consult_help expr db =
   | NoMatchingRule -> [ False ]
 
 and rule_uni mgus atoms db =
-  (* let () = print_endline "called rule_uni" in *)
   let get_new_mgu atom mgu =
     List.map
       (fun x ->
@@ -230,22 +264,25 @@ let rec cleanup ans =
     (trim_internal_variables ans)
 ;;
 
+exception ExpectedArgs
+
 let consult expr db =
   let (Ex parsed_expr) = Lexer.p expr in
   let single_formatter parsed_expr =
+    let rec format_args args =
+      match args with
+      | Args (e, p) -> Args (e, List.map general_formatter p)
+      | _ -> raise ExpectedArgs
+    and general_formatter x =
+      match x with
+      | Variable a -> Variable (a ^ "@")
+      | Constant a -> Constant a
+      | Args (e, p) -> format_args (Args (e, p))
+      | _ -> raise UnhandledMGUCase
+    in
     let parsed_expr =
       match parsed_expr with
-      | Fact (Args (e, p)) ->
-        Fact
-          (Args
-             ( e
-             , List.map
-                 (fun x ->
-                   match x with
-                   | Variable a -> Variable (a ^ "@")
-                   | Constant a -> Constant a
-                   | _ -> raise MGUOnlyHandlesVarsAndConsts)
-                 p ))
+      | Fact (Args (e, p)) -> Fact (format_args (Args (e, p)))
       | _ -> raise MGUOnlyWorksWithArgs
     in
     parsed_expr
