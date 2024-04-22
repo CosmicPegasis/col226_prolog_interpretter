@@ -22,6 +22,8 @@ let rec find_match e db =
   | _ -> raise NoMatchingRule
 ;;
 
+exception UnhandledPrinterCase
+
 let rec atom_printer arg =
   match arg with
   | Args (e, p) ->
@@ -32,6 +34,7 @@ let rec atom_printer arg =
   | Variable v -> print_string ("Variable: " ^ v ^ " ")
   | Constant c -> print_string ("Constant: " ^ c ^ " ")
   | Atom a -> atom_printer a
+  | _ -> raise UnhandledPrinterCase
 ;;
 
 let rec print_conditional l =
@@ -106,6 +109,7 @@ let rec subst_helper l p =
                (* let () = atom_printer (Args (e, p')) in *)
                Args (e, subst_helper [ var_name, structure ] p')
              | Constant a -> Constant a
+             | Array l -> Array (subst_helper [ var_name, structure ] l)
              | _ -> raise UnhandledMGUCase)
            p
        in
@@ -135,18 +139,32 @@ exception NotUnifiable
 exception MGUOnlyWorksWithArgs
 
 let rec find_mgu l1 l2 =
-  let mgu_helper e1 e2 =
+  let rec mgu_helper e1 e2 =
     match e1, e2 with
     | Variable a1, Variable a2 ->
       if a1 = a2 then True else Conditional [ a2, Variable a1 ]
-    | Variable a1, Constant a2 -> Conditional [ a1, Constant a2 ]
-    | Constant a1, Variable a2 -> Conditional [ a2, Constant a1 ]
+    | Variable a1, structure -> Conditional [ a1, structure ]
+    | structure, Variable a2 -> Conditional [ a2, structure ]
     | Constant a1, Constant a2 -> if a1 = a2 then True else False
-    | Variable a1, Args (e1, p1) -> Conditional [ a1, Args (e1, p1) ]
-    | Args (e1, p1), Variable a1 -> Conditional [ a1, Args (e1, p1) ]
+    | Constant _, structure -> False
+    | structure, Constant _ -> False
     | Args (e1, p1), Args (e2, p2) -> if e1 = e2 then find_mgu p1 p2 else False
-    | Constant a, Args (e1, p1) -> False
-    | Args (e1, p1), Constant a -> False
+    | Args ("|", [ a1; a2 ]), Array (hd :: tl) ->
+      let x =
+        match mgu_helper a1 hd with
+        | True -> mgu_helper a2 (Array tl)
+        | False -> False
+        | Conditional l ->
+          (match mgu_helper a2 (Array (subst_helper l tl)) with
+           | True -> Conditional l
+           | False -> False
+           | Conditional l' -> Conditional (l' @ l))
+      in
+      x
+    | Array (hd :: tl), Args ("|", p1) -> mgu_helper (Args ("|", p1)) (Array (hd :: tl))
+    | a, Args (e1, p1) -> False
+    | Args (e1, p1), a -> False
+    | Array l1, Array l2 -> find_mgu l1 l2
     | _, _ -> raise UnhandledMGUCase
   in
   match l1, l2 with
@@ -181,16 +199,19 @@ let rec rename_variable i expr =
 ;;
 
 let rec consult_help expr cur_db db i =
+  let e, p =
+    match expr with
+    | Fact (Args (e, p)) -> e, p
+    | _ -> raise InvalidQuery
+  in
   try
-    let e, p =
-      match expr with
-      | Fact (Args (e, p)) -> e, p
-      | _ -> raise InvalidQuery
-    in
     let expr', rem = find_match e cur_db in
     match expr' with
     | Fact (Args (e, p')) ->
-      find_mgu p (List.map (rename_variable i) p') :: consult_help expr rem db i
+      let temp_mgu =
+        find_mgu p (List.map (rename_variable i) p') :: consult_help expr rem db i
+      in
+      temp_mgu
     | Rule (Args (e, p'), Body b) ->
       let initial_mgu = find_mgu p (List.map (rename_variable i) p') in
       if initial_mgu = False
@@ -215,7 +236,7 @@ let rec consult_help expr cur_db db i =
               | Conditional l, True -> Conditional l
               | Conditional l, False -> False
               | Conditional l, Conditional l' -> Conditional (l' @ l))
-            (rule_uni [ initial_mgu ] factual_body db (i + 1))
+            (rule_uni [ initial_mgu ] factual_body db (i + 1) @ consult_help expr rem db i)
         in
         new_mgus)
     | _ -> [ True ]
@@ -298,6 +319,7 @@ let rec cleanup ans =
 ;;
 
 exception ExpectedArgs
+exception UnhandledFormatterCase
 
 let consult expr db =
   let (Ex parsed_expr) = Lexer.p expr in
@@ -311,7 +333,8 @@ let consult expr db =
       | Variable a -> Variable (a ^ "@")
       | Constant a -> Constant a
       | Args (e, p) -> format_args (Args (e, p))
-      | _ -> raise UnhandledMGUCase
+      | Array l -> Array (List.map general_formatter l)
+      | _ -> raise UnhandledFormatterCase
     in
     let parsed_expr =
       match parsed_expr with
@@ -441,5 +464,24 @@ let consult expr db =
     Conditional [("X", Constant "bob"); ("Y", Constant "math201")]]
 *)
 
-let db = construct_db "mem(X, lst(X, T)). mem(X, lst(Y, T)) :- mem(X, T)."
-let _ = consult "mem(a, lst(b, lst(a, empty)))." db
+let db =
+  construct_db
+    "mem(X,[X|T]).\n\
+     mem(X,[H|R]) :- mem(X,R). \n\
+     mem(X,inter(S1,S2)) :- mem(X,S1),mem(X,S2).\n"
+;;
+
+(*mem(X,union(S1,S2)) :- mem(X,S1).\n\
+  mem(X,union(S1,S2)) :- mem(X,S2). \n*)
+
+(* consult "mem(2, union([1], [2]))." db;;
+
+   (*emulates prolog behavior for this test case*)
+   consult "mem(X, union([1,2,3], [2,3,4]))." *)
+
+(*- : ans list =
+    [Conditional [("X", Constant "1")]; Conditional [("X", Constant "2")];
+ Conditional [("X", Constant "3")]; Conditional [("X", Constant "2")];
+ Conditional [("X", Constant "3")]; Conditional [("X", Constant "4")]]*)
+let _ = consult "mem(1, inter([1], [2]]))." db
+(* - : ans list = [False] *)
