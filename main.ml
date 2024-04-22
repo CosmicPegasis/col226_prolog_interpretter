@@ -13,13 +13,26 @@ type ans =
 exception NoMatchingRule
 exception UnhandledMGUCase
 
-let rec find_match e db =
+let rec find_matches e db =
   match db with
+  | [] -> []
   | Fact (Args (e', p)) :: tl ->
-    if e = e' then Fact (Args (e', p)), tl else find_match e tl
+    if e = e' then Fact (Args (e', p)) :: find_matches e tl else find_matches e tl
   | Rule (Args (e', p), b) :: tl ->
-    if e = e' then Rule (Args (e', p), b), tl else find_match e tl
-  | _ -> raise NoMatchingRule
+    if e = e' then Rule (Args (e', p), b) :: find_matches e tl else find_matches e tl
+  | a :: tl -> find_matches e tl
+;;
+
+let rec atom_printer arg =
+  match arg with
+  | Args (e, p) ->
+    let () = print_string "Args(" in
+    let () = print_string (e ^ " ") in
+    let () = List.fold_left (fun acc elem -> atom_printer elem) () p in
+    print_string ")"
+  | Variable v -> print_string ("Variable: " ^ v ^ " ")
+  | Constant c -> print_string ("Constant: " ^ c ^ " ")
+  | Atom a -> atom_printer a
 ;;
 
 let rec print_conditional l =
@@ -29,10 +42,13 @@ let rec print_conditional l =
       match structure with
       | Variable v -> Printf.printf "(Var %s, Var %s), " var_name v
       | Constant v -> Printf.printf "(Var %s Constant %s), " var_name v
-      | _ -> ()
+      | Args (e, p) ->
+        let _ = print_string (var_name ^ " ") in
+        atom_printer (Args (e, p))
+      | _ -> raise UnhandledMGUCase
     in
     print_conditional tl
-  | [] -> print_string " "
+  | [] -> print_string ""
 ;;
 
 let rec print_mgu mgu =
@@ -51,16 +67,27 @@ let rec print_mgu mgu =
   | [] -> print_endline ""
 ;;
 
-let rec atom_printer arg =
-  match arg with
-  | Args (e, p) ->
-    let () = print_endline "Args(" in
-    let () = print_endline (e ^ " ") in
-    let () = List.fold_left (fun acc elem -> atom_printer elem) () p in
-    print_endline ") "
-  | Variable v -> print_endline ("Variable: " ^ v ^ " ")
-  | Constant c -> print_endline ("Constant" ^ c ^ " ")
-  | Atom a -> atom_printer a
+let rec expr_printer expr =
+  match expr with
+  | Fact a ->
+    let () = print_string "Fact(" in
+    let _ = atom_printer a in
+    print_string ")\n"
+  | Const c -> print_string ("Constant " ^ c ^ "\n")
+  | Rule (a, Body b) ->
+    let _ = print_string "Rule(" in
+    let () = atom_printer a in
+    let _ = print_string "Body(" in
+    let _ =
+      List.map
+        (fun x ->
+          let _ = atom_printer x in
+          print_string ",")
+        b
+    in
+    let _ = print_string ")" in
+    let _ = print_string ")\n" in
+    ()
 ;;
 
 exception CanSubstOnlyFacts
@@ -77,8 +104,8 @@ let rec subst_helper l p =
              match x with
              | Variable v -> if v = var_name then structure else Variable v
              | Args (e, p') ->
-               let () = print_endline "in_args" in
-               Args (e, subst_helper l p')
+               (* let () = atom_printer (Args (e, p')) in *)
+               Args (e, subst_helper [ var_name, structure ] p')
              | Constant a -> Constant a
              | _ -> raise UnhandledMGUCase)
            p
@@ -119,6 +146,8 @@ let rec find_mgu l1 l2 =
     | Variable a1, Args (e1, p1) -> Conditional [ a1, Args (e1, p1) ]
     | Args (e1, p1), Variable a1 -> Conditional [ a1, Args (e1, p1) ]
     | Args (e1, p1), Args (e2, p2) -> if e1 = e2 then find_mgu p1 p2 else False
+    | Constant a, Args (e1, p1) -> False
+    | Args (e1, p1), Constant a -> False
     (* | Variable a1, Array l -> Conditional [ a1, Array l ]
        | Array l, Variable a1 -> Conditional [ a1, Array l ]
        | Array l, Array l' -> find_mgu l l' *)
@@ -145,20 +174,31 @@ let rec find_mgu l1 l2 =
   | _ -> False
 ;;
 
-let rec consult_help expr db =
-  try
-    let e, p =
-      match expr with
-      | Fact (Args (e, p)) -> e, p
-      | _ -> raise InvalidQuery
-    in
-    let expr', rem = find_match e db in
-    match expr' with
-    (* | Fact(Args(e, p')) -> [find_mgu p p'] *)
-    | Fact (Args (e, p')) -> find_mgu p p' :: consult_help expr rem
-    (*We unify we the argument list as well as the children*)
-    | Rule (Args (e, p'), Body b) ->
-      let initial_mgu = find_mgu p p' in
+exception UnhandledRenameCase
+
+let rec rename_variable i expr =
+  match expr with
+  | Variable v -> Variable (string_of_int i ^ " " ^ v)
+  | Constant c -> Constant c
+  | Args (e, p) -> Args (e, List.map (rename_variable i) p)
+  | _ -> raise UnhandledRenameCase
+;;
+
+let rec consult_help expr db i =
+  let e, p =
+    match expr with
+    | Fact (Args (e, p)) -> e, p
+    | _ -> raise InvalidQuery
+  in
+  let expr' = find_matches e db in
+  match expr' with
+  | Fact (Args (e, p')) :: tl ->
+    find_mgu p (List.map (rename_variable i) p') :: consult_help expr rem i
+  | Rule (Args (e, p'), Body b) :: tl ->
+    let initial_mgu = find_mgu p (List.map (rename_variable i) p') in
+    if initial_mgu = False
+    then False :: consult_help expr rem i
+    else (
       let factual_body =
         List.map
           (fun x -> Fact x)
@@ -167,7 +207,7 @@ let rec consult_help expr db =
                match x with
                | Args (f, g) -> true
                | _ -> false)
-             b)
+             (List.map (rename_variable i) b))
       in
       let new_mgus =
         List.map
@@ -178,16 +218,13 @@ let rec consult_help expr db =
             | Conditional l, True -> Conditional l
             | Conditional l, False -> False
             | Conditional l, Conditional l' -> Conditional (l' @ l))
-          (rule_uni [ initial_mgu ] factual_body db)
+          (rule_uni [ initial_mgu ] factual_body db (i + 1))
       in
-      (* let () = print_endline " " in
-         let () = print_mgu (List.filter (fun x -> x <> False) new_mgus) in *)
-      new_mgus
-    | _ -> [ True ]
-  with
-  | NoMatchingRule -> [ False ]
+      new_mgus)
+  | _ -> [ True ]
+  | [] -> [ False ]
 
-and rule_uni mgus atoms db =
+and rule_uni mgus atoms db i =
   let get_new_mgu atom mgu =
     List.map
       (fun x ->
@@ -199,14 +236,14 @@ and rule_uni mgus atoms db =
            | True -> Conditional l
            | False -> False
            | Conditional l' -> Conditional (l' @ l)))
-      (consult_help (subst mgu atom) db)
+      (consult_help (subst mgu atom) db i)
   in
   match atoms with
   | atom :: rem_atoms ->
     (* first we need to find all possible new mgus for this particular atom*)
     let new_mgus = List.fold_left (fun acc cur -> acc @ get_new_mgu atom cur) [] mgus in
     (* let () = print_mgu (List.filter (fun x -> x <> False) new_mgus) in *)
-    rule_uni new_mgus rem_atoms db
+    rule_uni new_mgus rem_atoms db i
   | [] -> mgus
 ;;
 
@@ -295,7 +332,8 @@ let consult expr db =
     then [ False ]
     else cleanup ans
   in
-  answer_formatter @@ List.filter (fun x -> False <> x) (rule_uni [ True ] parsed_expr db)
+  answer_formatter
+  @@ List.filter (fun x -> False <> x) (rule_uni [ True ] parsed_expr db 0)
 ;;
 
 (* in
@@ -406,3 +444,6 @@ let consult expr db =
    [Conditional [("X", Constant "mary"); ("Y", Constant "cs101")];
     Conditional [("X", Constant "bob"); ("Y", Constant "math201")]]
 *)
+
+let db = construct_db "mem(X, lst(X, T)). mem(X, lst(Y, T)) :- mem(X, T)."
+let _ = consult "mem(a, lst(b, lst(a, empty)))." db
