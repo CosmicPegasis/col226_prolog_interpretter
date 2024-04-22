@@ -13,14 +13,13 @@ type ans =
 exception NoMatchingRule
 exception UnhandledMGUCase
 
-let rec find_matches e db =
+let rec find_match e db =
   match db with
-  | [] -> []
   | Fact (Args (e', p)) :: tl ->
-    if e = e' then Fact (Args (e', p)) :: find_matches e tl else find_matches e tl
+    if e = e' then Fact (Args (e', p)), tl else find_match e tl
   | Rule (Args (e', p), b) :: tl ->
-    if e = e' then Rule (Args (e', p), b) :: find_matches e tl else find_matches e tl
-  | a :: tl -> find_matches e tl
+    if e = e' then Rule (Args (e', p), b), tl else find_match e tl
+  | _ -> raise NoMatchingRule
 ;;
 
 let rec atom_printer arg =
@@ -148,9 +147,6 @@ let rec find_mgu l1 l2 =
     | Args (e1, p1), Args (e2, p2) -> if e1 = e2 then find_mgu p1 p2 else False
     | Constant a, Args (e1, p1) -> False
     | Args (e1, p1), Constant a -> False
-    (* | Variable a1, Array l -> Conditional [ a1, Array l ]
-       | Array l, Variable a1 -> Conditional [ a1, Array l ]
-       | Array l, Array l' -> find_mgu l l' *)
     | _, _ -> raise UnhandledMGUCase
   in
   match l1, l2 with
@@ -184,45 +180,47 @@ let rec rename_variable i expr =
   | _ -> raise UnhandledRenameCase
 ;;
 
-let rec consult_help expr db i =
-  let e, p =
-    match expr with
-    | Fact (Args (e, p)) -> e, p
-    | _ -> raise InvalidQuery
-  in
-  let expr' = find_matches e db in
-  match expr' with
-  | Fact (Args (e, p')) :: tl ->
-    find_mgu p (List.map (rename_variable i) p') :: consult_help expr rem i
-  | Rule (Args (e, p'), Body b) :: tl ->
-    let initial_mgu = find_mgu p (List.map (rename_variable i) p') in
-    if initial_mgu = False
-    then False :: consult_help expr rem i
-    else (
-      let factual_body =
-        List.map
-          (fun x -> Fact x)
-          (List.filter
-             (fun x ->
-               match x with
-               | Args (f, g) -> true
-               | _ -> false)
-             (List.map (rename_variable i) b))
-      in
-      let new_mgus =
-        List.map
-          (fun x ->
-            match x, initial_mgu with
-            | True, _ -> initial_mgu
-            | False, _ -> False
-            | Conditional l, True -> Conditional l
-            | Conditional l, False -> False
-            | Conditional l, Conditional l' -> Conditional (l' @ l))
-          (rule_uni [ initial_mgu ] factual_body db (i + 1))
-      in
-      new_mgus)
-  | _ -> [ True ]
-  | [] -> [ False ]
+let rec consult_help expr cur_db db i =
+  try
+    let e, p =
+      match expr with
+      | Fact (Args (e, p)) -> e, p
+      | _ -> raise InvalidQuery
+    in
+    let expr', rem = find_match e cur_db in
+    match expr' with
+    | Fact (Args (e, p')) ->
+      find_mgu p (List.map (rename_variable i) p') :: consult_help expr rem db i
+    | Rule (Args (e, p'), Body b) ->
+      let initial_mgu = find_mgu p (List.map (rename_variable i) p') in
+      if initial_mgu = False
+      then False :: consult_help expr rem db i
+      else (
+        let factual_body =
+          List.map
+            (fun x -> Fact x)
+            (List.filter
+               (fun x ->
+                 match x with
+                 | Args (f, g) -> true
+                 | _ -> false)
+               (List.map (rename_variable i) b))
+        in
+        let new_mgus =
+          List.map
+            (fun x ->
+              match x, initial_mgu with
+              | True, _ -> initial_mgu
+              | False, _ -> False
+              | Conditional l, True -> Conditional l
+              | Conditional l, False -> False
+              | Conditional l, Conditional l' -> Conditional (l' @ l))
+            (rule_uni [ initial_mgu ] factual_body db (i + 1))
+        in
+        new_mgus)
+    | _ -> [ True ]
+  with
+  | NoMatchingRule -> [ False ]
 
 and rule_uni mgus atoms db i =
   let get_new_mgu atom mgu =
@@ -236,13 +234,11 @@ and rule_uni mgus atoms db i =
            | True -> Conditional l
            | False -> False
            | Conditional l' -> Conditional (l' @ l)))
-      (consult_help (subst mgu atom) db i)
+      (consult_help (subst mgu atom) db db i)
   in
   match atoms with
   | atom :: rem_atoms ->
-    (* first we need to find all possible new mgus for this particular atom*)
     let new_mgus = List.fold_left (fun acc cur -> acc @ get_new_mgu atom cur) [] mgus in
-    (* let () = print_mgu (List.filter (fun x -> x <> False) new_mgus) in *)
     rule_uni new_mgus rem_atoms db i
   | [] -> mgus
 ;;
