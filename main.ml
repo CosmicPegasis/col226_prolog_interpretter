@@ -261,7 +261,7 @@ and rule_uni mgus atoms db i =
   | atom :: rem_atoms ->
     let new_mgus =
       List.filter (fun x -> x <> False)
-      @@ List.fold_left (fun acc cur -> get_new_mgu atom cur) [] mgus
+      @@ List.fold_left (fun acc cur -> acc @ get_new_mgu atom cur) [] mgus
     in
     if new_mgus = [] then [ False ] else rule_uni new_mgus rem_atoms db i
   | [] -> mgus
