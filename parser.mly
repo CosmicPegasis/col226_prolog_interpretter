@@ -3,6 +3,7 @@
 %token <string> CONST
 %token LPAREN RPAREN
 %token COMMA DEF PERIOD
+%token LBRACKET PIPE RBRACKET
 %token EOF
 %token <int> INT
 %start main           
@@ -34,6 +35,8 @@ body:
 
 atom:
     | CONST LPAREN atom_arg RPAREN   {Args($1, $3)}
+    | LBRACKET atom_arg RBRACKET {Array($2)}
+    | LBRACKET atom_arg PIPE atom_arg RBRACKET {Args("|", $2 @ $4)}
     | ID {Variable($1)}
     | CONST {Constant($1)}
 

@@ -257,10 +257,19 @@ and rule_uni mgus atoms db i =
            | Conditional l' -> Conditional (l' @ l)))
       (consult_help (subst mgu atom) db db i)
   in
+  let rec find_all_mgus mgus atom =
+    match mgus with
+    | [] -> []
+    | cur :: tl ->
+      let new_mgu = List.filter (fun x -> x <> False) @@ get_new_mgu atom cur in
+      (match new_mgu with
+       | [] -> [ False ]
+       | a -> a @ find_all_mgus tl atom)
+  in
   match atoms with
   | atom :: rem_atoms ->
-    let new_mgus = List.fold_left (fun acc cur -> acc @ get_new_mgu atom cur) [] mgus in
-    rule_uni new_mgus rem_atoms db i
+    let new_mgus = List.filter (fun x -> x <> False) @@ find_all_mgus mgus atom in
+    if new_mgus = [] then [ False ] else rule_uni new_mgus rem_atoms db i
   | [] -> mgus
 ;;
 
@@ -483,5 +492,20 @@ let db =
     [Conditional [("X", Constant "1")]; Conditional [("X", Constant "2")];
  Conditional [("X", Constant "3")]; Conditional [("X", Constant "2")];
  Conditional [("X", Constant "3")]; Conditional [("X", Constant "4")]]*)
-let _ = consult "mem(1, inter([1], [2]]))." db
+consult "mem(1, inter([1], [2]))." db;;
+
 (* - : ans list = [False] *)
+consult "mem(1, inter([1,2], [2]))." db;;
+
+(* - : ans list = [False] *)
+consult "mem(2, inter([1,2], [2]))." db;;
+
+(* - : ans list = [True] *)
+consult "mem(2, inter([1,2], [2,3]))." db;;
+
+(* - : ans list = [True] *)
+consult "mem(3, inter([1,2], [2,3]))." db;;
+
+(* - : ans list = [False] *)
+consult "mem(3, inter([3,1,2], [2,3]))." db
+(* - : ans list = [True] *)

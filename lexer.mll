@@ -19,9 +19,12 @@ rule tokenize = parse
   | ['0'-'9']+     {CONST (Lexing.lexeme lexbuf)}
   | '('             { LPAREN }
   | ')'             { RPAREN }
+  | '['               {LBRACKET}
+  | ']'               {RBRACKET}
   | ":-"            { DEF }
   | ','              {COMMA}
   | '.'              {PERIOD}
+  | '|'                {PIPE}
   | eof               {EOF}
  | _               { failwith ("Unexpected character: " ^ Lexing.lexeme lexbuf) }
 
